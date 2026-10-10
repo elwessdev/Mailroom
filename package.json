@@ -1,0 +1,57 @@
+{
+  "name": "mailroom",
+  "productName": "Mailroom",
+  "version": "0.2.1",
+  "description": "Use several Gmail accounts in one window, one tab each, with native notifications",
+  "main": "main.js",
+  "license": "MIT",
+  "author": {
+    "name": "Mailroom contributors",
+    "email": "mailroom@example.invalid"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/unit.test.js && node test/e2e.js",
+    "dist": "electron-builder --linux deb AppImage"
+  },
+  "build": {
+    "appId": "org.gmailtabs.app",
+    "productName": "Mailroom",
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib.js",
+      "renderer/**",
+      "assets/**"
+    ],
+    "linux": {
+      "target": [
+        "deb",
+        "AppImage"
+      ],
+      "category": "Network;Email",
+      "icon": "assets/icon.png",
+      "maintainer": "Mailroom contributors <mailroom@example.invalid>",
+      "synopsis": "Multiple Gmail accounts in one tabbed window",
+      "mimeTypes": [
+        "x-scheme-handler/mailto"
+      ],
+      "syncDesktopName": true,
+      "desktop": {
+        "entry": {
+          "Keywords": "gmail;mail;email;google;"
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "desktopName": "mailroom.desktop",
+  "homepage": "https://github.com/REPLACE-ME/mailroom",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REPLACE-ME/mailroom.git"
+  }
+}

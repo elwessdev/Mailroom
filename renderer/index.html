@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'">
+  <title>Mailroom</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="bar">
+    <div id="tabs"></div>
+    <button id="add" title="Add account (Ctrl+T)">+</button>
+    <button id="settings" title="Settings">&#8942;</button>
+  </div>
+  <dialog id="dlg">
+    <form method="dialog" id="form">
+      <label id="dlg-title" for="dlg-input"></label>
+      <input id="dlg-input" autocomplete="off" maxlength="40">
+      <menu>
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="ok" class="primary">OK</button>
+      </menu>
+    </form>
+  </dialog>
+  <script src="renderer.js"></script>
+</body>
+</html>
