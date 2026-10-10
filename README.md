@@ -32,7 +32,7 @@ npm test   # unit tests + an end-to-end run against a fake Gmail on localhost
 
 ```bash
 npm run dist   # dist/*.deb and dist/*.AppImage
-sudo apt install ./dist/mailroom_0.3.0_amd64.deb
+sudo apt install ./dist/mailroom_0.3.1_amd64.deb
 ```
 
 ## Extensions (experimental)
@@ -55,7 +55,10 @@ Example, [Mailtrack](https://mailsuite.com) (email read receipts; id taken from 
 npm run install-extension -- ndnaehgpjlnokgebbaldlmgkapkpjkkb mailtrack
 ```
 
-Restart Mailroom afterwards. There is no toolbar for extensions, so look for their changes inside Gmail.
+Restart Mailroom afterwards. Electron has no extensions toolbar, so each extension's popup is in the ⋮ menu
+(and the tray menu), listed for the active account. Extensions are loaded per account, so set one up in each
+tab. For Mailtrack: open ⋮ → *Mailtrack…* → *Sign in with Google*. Pages an extension opens
+(`chrome.tabs.create`) appear in a small Mailroom window that shares that account's session.
 Extensions can read your mail pages: only install ones you trust.
 
 ## Notes

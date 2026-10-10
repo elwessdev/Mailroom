@@ -11,8 +11,10 @@ const root = path.join(__dirname, '..');
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'mailroom-test-'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const seen = []; // request headers seen by the fake Gmail
+const hits = []; // extension windows: { path, ua }
 
 const server = http.createServer((req, res) => {
+  if (req.url.startsWith('/tab-test') || req.url.startsWith('/popup-test')) hits.push({ path: req.url.split('?')[0], query: req.url.split('?')[1] || '', ua: req.headers['user-agent'] });
   if (req.url.startsWith('/mail/u/0/feed/atom')) {
     res.setHeader('content-type', 'application/atom+xml');
     res.end('<feed><entry><title>Quarterly report</title><summary>Numbers inside</summary><author><name>Pat Boss</name></author></entry><entry><title>Older</title><summary>x</summary><author><name>Z</name></author></entry></feed>');
@@ -45,9 +47,14 @@ async function cdp(port, match) {
 }
 
 function launch(port, url) {
-  fs.cpSync(path.join(__dirname, 'fixtures', 'probe-ext'), path.join(userData, 'extensions', 'probe'), { recursive: true });
+  const extDir = path.join(userData, 'extensions', 'probe');
+  fs.cpSync(path.join(__dirname, 'fixtures', 'probe-ext'), extDir, { recursive: true });
+  const base = new URL(url);
+  fs.writeFileSync(path.join(extDir, 'config.json'), JSON.stringify({
+    tabUrl: `http://localhost:${base.port}/tab-test`, popupUrl: `http://localhost:${base.port}/popup-test`,
+  }));
   const child = spawn(electron, [root, `--remote-debugging-port=${port}`, ...(process.env.GT_NO_SANDBOX ? ['--no-sandbox'] : [])], {
-    env: { ...process.env, MAILROOM_TEST: '1', MAILROOM_TEST_CLICK: '1', MAILROOM_USERDATA: userData, MAILROOM_START_URL: url },
+    env: { ...process.env, MAILROOM_TEST: '1', MAILROOM_TEST_CLICK: '1', MAILROOM_TEST_POPUP: '1', MAILROOM_USERDATA: userData, MAILROOM_START_URL: url },
   });
   const out = [];
   child.stdout.on('data', (d) => out.push(...d.toString().split('\n').filter(Boolean)));
@@ -93,9 +100,15 @@ async function waitFor(fn, what, ms = 15000) {
 
     // extensions: a probe extension uses chrome.notifications / permissions / storage.sync, then gets a click
     await waitFor(() => app.out.find((l) => l === 'TEST_EXT_NOTIFY Probe title | perm:true sync:object'), 'extension notification');
-    const sw = await waitFor(() => cdp(port, (t) => t.type === 'service_worker' || t.url.startsWith('chrome-extension://')).catch(() => null), 'extension worker');
+    const sw = await waitFor(() => cdp(port, (t) => t.type === 'service_worker').catch(() => null), 'extension worker');
     await waitFor(async () => (await sw.eval('self.clicked')) === 'probe', 'click delivered to extension');
     console.log('ok  extension loads; chrome.notifications/permissions/storage.sync work; click reaches the extension');
+    await waitFor(() => hits.find((h) => h.path === '/tab-test'), 'chrome.tabs.create window');
+    const pop = await waitFor(() => hits.find((h) => h.path === '/popup-test'), 'extension popup window');
+    assert.strictEqual(pop.query, 'perm=true&sync=object', 'popup page shims: ' + pop.query);
+    await waitFor(() => hits.find((h) => h.path === '/tab-test2'), 'chrome.tabs.create from an extension page');
+    assert(hits.every((h) => /Firefox\//.test(h.ua) && !/Electron/.test(h.ua)), 'extension window UA: ' + JSON.stringify(hits));
+    console.log('ok  chrome.tabs.create opens a window with the session; extension popup page loads and runs');
 
     // user agent
     const ua = await A.eval('navigator.userAgent');

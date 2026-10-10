@@ -103,10 +103,11 @@ function spoofClientHints(wc) {
 // Unpacked Chrome extensions in <userData>/extensions/<name>/ are loaded into every account session.
 // Electron lacks chrome.notifications, chrome.permissions and chrome.storage.sync, so each extension's
 // service worker gets one extra line (idempotent) that installs shims from sw-preload.js.
-const SHIM_MARK = '/*mailroom-shim-2*/';
+const SHIM_MARK = '/*mailroom-shim-3*/';
 const SHIM_LINE = SHIM_MARK + "try{if(typeof chrome!=='undefined'){" +
   "if(!chrome.notifications&&self.__mrNotifications)chrome.notifications=self.__mrNotifications;" +
   "if(!chrome.permissions&&self.__mrPermissions)chrome.permissions=self.__mrPermissions;" +
+  "if(chrome.tabs&&self.__mrTabs)chrome.tabs.create=self.__mrTabs.create;" +
   "if(chrome.storage&&!chrome.storage.sync)chrome.storage.sync=chrome.storage.local;}}catch(e){}\n";
 
 function installShim(dir) {
@@ -117,16 +118,19 @@ function installShim(dir) {
     const file = path.join(dir, rel);
     let code = fs.readFileSync(file, 'utf8');
     if (code.startsWith(SHIM_MARK)) return;
+    if (code.startsWith('/*mailroom-shim-')) code = code.slice(code.indexOf('\n') + 1); // older shim line
     fs.writeFileSync(file, SHIM_LINE + code);
   } catch {}
 }
 
+const loaded = new Map();   // session -> [{ id, name, popup }] extensions loaded into it
 const hooked = new WeakSet();
 const extNotes = new Map(); // notification id -> Notification
 function hookExtensionWorkers(ses) {
   if (hooked.has(ses)) return;
   hooked.add(ses);
   ses.registerPreloadScript({ type: 'service-worker', filePath: path.join(__dirname, 'sw-preload.js') });
+  ses.registerPreloadScript({ type: 'frame', filePath: path.join(__dirname, 'ext-page-preload.js') });
   ses.serviceWorkers.on('running-status-changed', ({ versionId, runningStatus }) => {
     if (runningStatus !== 'starting' && runningStatus !== 'running') return;
     const worker = ses.serviceWorkers.getWorkerFromVersionID(versionId);
@@ -149,8 +153,53 @@ function hookExtensionWorkers(ses) {
       n.show();
       if (TEST && process.env.MAILROOM_TEST_CLICK) setTimeout(() => fire('onClicked', id), 500);
     });
+    worker.ipc.on('ext-tab-create', (_e, url) => openFromExtension(ses, accountId(), url));
     worker.ipc.on('ext-notify-clear', (_e, id) => { extNotes.get(id)?.close(); extNotes.delete(id); });
   });
+}
+
+// A page an extension asked to open (chrome.tabs.create): Gmail goes to that account's tab, anything else
+// opens in a small window that shares the account's session, so the extension's own scripts run on it.
+function openFromExtension(ses, accId, url) {
+  if (!/^https?:\/\//i.test(url)) return;
+  if (lib.isGmailOrigin(url) && accId) {
+    showWindow();
+    select(accId);
+    views.get(accId)?.webContents.loadURL(url);
+  } else {
+    openExtWindow(ses, url, 520, 740);
+  }
+}
+
+function openExtWindow(ses, url, width, height) {
+  const w = new BrowserWindow({
+    width, height, parent: win, show: !TEST, icon: ICON, autoHideMenuBar: true,
+    webPreferences: { session: ses, nodeIntegration: false, contextIsolation: true, sandbox: true },
+  });
+  w.setMenu(null);
+  w.webContents.setUserAgent(UA);
+  spoofClientHints(w.webContents);
+  w.webContents.setWindowOpenHandler(({ url: u }) => {
+    if (/^https?:\/\//i.test(u)) setImmediate(() => w.loadURL(u));
+    return { action: 'deny' };
+  });
+  // A popup that sends you to a web page (sign-in) needs more room.
+  w.webContents.on('did-navigate', (_e, u) => {
+    if (!u.startsWith('chrome-extension:') && w.getSize()[0] < 520) w.setSize(560, 780);
+  });
+  if (TEST) console.log(`TEST_EXT_WINDOW ${url.split('?')[0]}`);
+  w.loadURL(url);
+}
+
+// Menu entries standing in for the toolbar icons Electron does not have: each extension's popup.
+function extensionItems() {
+  const ses = views.get(data.active)?.webContents.session;
+  const list = (ses && loaded.get(ses) || []).filter((e) => e.popup);
+  if (!list.length) return [];
+  return [
+    { type: 'separator' },
+    ...list.map((e) => ({ label: `${e.name}…`, click: () => openExtWindow(ses, `chrome-extension://${e.id}/${e.popup}`, 400, 620) })),
+  ];
 }
 
 async function loadExtensions(ses) {
@@ -164,7 +213,10 @@ async function loadExtensions(ses) {
     try {
       installShim(full);
       const ext = await ses.extensions.loadExtension(full);
+      const popup = ext.manifest?.action?.default_popup || ext.manifest?.browser_action?.default_popup;
+      loaded.set(ses, [...(loaded.get(ses) || []), { id: ext.id, name: ext.name, popup }]);
       if (TEST) console.log(`TEST_EXT_LOADED ${ext.name}`);
+      if (TEST && popup && process.env.MAILROOM_TEST_POPUP) openExtWindow(ses, `chrome-extension://${ext.id}/${popup}`, 400, 620);
     } catch (e) {
       console.warn(`Extension "${name}" failed to load: ${e.message}`);
     }
@@ -352,6 +404,7 @@ function settingItems() {
     toggle('sound', 'Notification sound'),
     toggle('gmailNotifications', "Gmail's own notifications (needs restart)"),
     toggle('launchAtLogin', 'Launch at login', applyAutostart),
+    ...extensionItems(),
   ];
 }
 
@@ -420,6 +473,13 @@ function wireIpc() {
       { type: 'separator' },
       { label: 'Remove…', click: () => removeAccount(id) },
     ]).popup({ window: win });
+  });
+  // chrome.tabs.create called from an extension page (e.g. a popup); only extension pages may ask.
+  ipcMain.on('ext-tab-create-page', (e, url) => {
+    if (!e.senderFrame?.url.startsWith('chrome-extension://')) return;
+    const ses = e.sender.session;
+    const id = data.accounts.find((a) => views.get(a.id)?.webContents.session === ses)?.id;
+    openFromExtension(ses, id, url);
   });
   ipcMain.on('dialog', (_e, open) => {
     overlay = !!open;

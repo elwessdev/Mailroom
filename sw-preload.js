@@ -47,5 +47,16 @@ const permissions = {
   onRemoved: none,
 };
 
+// Electron has no real tabs: chrome.tabs.create asks the main process to open the page in a Mailroom window.
+let tabId = 1000;
+const tabs = {
+  create(options, cb) {
+    const url = String((options && options.url) || '');
+    ipcRenderer.send('ext-tab-create', url);
+    return done(cb, { id: tabId++, url, active: true, index: 0, windowId: 1, highlighted: true, pinned: false, incognito: false });
+  },
+};
+
 contextBridge.exposeInMainWorld('__mrNotifications', notifications);
+contextBridge.exposeInMainWorld('__mrTabs', tabs);
 contextBridge.exposeInMainWorld('__mrPermissions', permissions);
