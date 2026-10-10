@@ -1,7 +1,7 @@
 {
   "name": "mailroom",
   "productName": "Mailroom",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Use several Gmail accounts in one window, one tab each, with native notifications",
   "main": "main.js",
   "license": "MIT",
@@ -12,7 +12,8 @@
   "scripts": {
     "start": "electron .",
     "test": "node --test test/unit.test.js && node test/e2e.js",
-    "dist": "electron-builder --linux deb AppImage"
+    "dist": "electron-builder --linux deb AppImage",
+    "install-extension": "node scripts/install-extension.js"
   },
   "build": {
     "appId": "org.gmailtabs.app",
@@ -20,6 +21,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "sw-preload.js",
       "lib.js",
       "renderer/**",
       "assets/**"

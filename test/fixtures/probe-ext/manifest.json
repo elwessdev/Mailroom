@@ -1,0 +1,7 @@
+{
+  "manifest_version": 3,
+  "name": "Mailroom probe",
+  "version": "1.0",
+  "permissions": ["notifications", "storage"],
+  "background": { "service_worker": "sw.js" }
+}

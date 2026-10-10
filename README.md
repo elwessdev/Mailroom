@@ -32,8 +32,31 @@ npm test   # unit tests + an end-to-end run against a fake Gmail on localhost
 
 ```bash
 npm run dist   # dist/*.deb and dist/*.AppImage
-sudo apt install ./dist/mailroom_0.2.2_amd64.deb
+sudo apt install ./dist/mailroom_0.3.0_amd64.deb
 ```
+
+## Extensions (experimental)
+
+Unpacked Chrome extensions in `~/.config/Mailroom/extensions/<name>/` are loaded into every account tab at
+startup. Electron implements only part of the extension API, so Mailroom supplies `chrome.notifications`
+(native notification + sound; clicking switches to the tab), `chrome.permissions` (always granted) and
+`chrome.storage.sync` (backed by local storage). To do that it adds one line to the top of each extension's
+service worker.
+
+Install one from the Chrome Web Store by its id (the 32-letter id in the store URL):
+
+```bash
+npm run install-extension -- <extension-id> <folder-name>
+```
+
+Example, [Mailtrack](https://mailsuite.com) (email read receipts; id taken from its own site):
+
+```bash
+npm run install-extension -- ndnaehgpjlnokgebbaldlmgkapkpjkkb mailtrack
+```
+
+Restart Mailroom afterwards. There is no toolbar for extensions, so look for their changes inside Gmail.
+Extensions can read your mail pages: only install ones you trust.
 
 ## Notes
 

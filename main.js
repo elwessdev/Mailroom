@@ -99,6 +99,78 @@ function spoofClientHints(wc) {
 }
 
 // Unpacked Chrome extensions in <userData>/extensions/<name>/ are loaded into every account session.
+// ---------- extensions ----------
+// Unpacked Chrome extensions in <userData>/extensions/<name>/ are loaded into every account session.
+// Electron lacks chrome.notifications, chrome.permissions and chrome.storage.sync, so each extension's
+// service worker gets one extra line (idempotent) that installs shims from sw-preload.js.
+const SHIM_MARK = '/*mailroom-shim-2*/';
+const SHIM_LINE = SHIM_MARK + "try{if(typeof chrome!=='undefined'){" +
+  "if(!chrome.notifications&&self.__mrNotifications)chrome.notifications=self.__mrNotifications;" +
+  "if(!chrome.permissions&&self.__mrPermissions)chrome.permissions=self.__mrPermissions;" +
+  "if(chrome.storage&&!chrome.storage.sync)chrome.storage.sync=chrome.storage.local;}}catch(e){}\n";
+
+function installShim(dir) {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    const rel = manifest.background?.service_worker;
+    if (!rel) return;
+    const file = path.join(dir, rel);
+    let code = fs.readFileSync(file, 'utf8');
+    if (code.startsWith(SHIM_MARK)) return;
+    fs.writeFileSync(file, SHIM_LINE + code);
+  } catch {}
+}
+
+const hooked = new WeakSet();
+const extNotes = new Map(); // notification id -> Notification
+function hookExtensionWorkers(ses) {
+  if (hooked.has(ses)) return;
+  hooked.add(ses);
+  ses.registerPreloadScript({ type: 'service-worker', filePath: path.join(__dirname, 'sw-preload.js') });
+  ses.serviceWorkers.on('running-status-changed', ({ versionId, runningStatus }) => {
+    if (runningStatus !== 'starting' && runningStatus !== 'running') return;
+    const worker = ses.serviceWorkers.getWorkerFromVersionID(versionId);
+    if (!worker || worker.__hooked) return;
+    worker.__hooked = true;
+    const accountId = () => data.accounts.find((a) => views.get(a.id)?.webContents.session === ses)?.id;
+    const fire = (name, id, index) => { try { worker.send('ext-notify-event', name, id, index); } catch {} };
+    worker.ipc.on('ext-notify', (_e, { id, title, message, buttons }) => {
+      if (TEST) console.log(`TEST_EXT_NOTIFY ${title} | ${message}`);
+      if (data.settings.sound) playSound();
+      if (!Notification.isSupported()) return;
+      const n = new Notification({
+        title, body: message, icon: ICON, silent: true,
+        actions: buttons.slice(0, 2).map((text) => ({ type: 'button', text })),
+      });
+      n.on('click', () => { showWindow(); const a = accountId(); if (a) select(a); fire('onClicked', id); });
+      n.on('action', (_ev, index) => fire('onButtonClicked', id, index));
+      n.on('close', () => { extNotes.delete(id); fire('onClosed', id, true); });
+      extNotes.set(id, n);
+      n.show();
+      if (TEST && process.env.MAILROOM_TEST_CLICK) setTimeout(() => fire('onClicked', id), 500);
+    });
+    worker.ipc.on('ext-notify-clear', (_e, id) => { extNotes.get(id)?.close(); extNotes.delete(id); });
+  });
+}
+
+async function loadExtensions(ses) {
+  hookExtensionWorkers(ses);
+  const dir = path.join(app.getPath('userData'), 'extensions');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const name of names) {
+    const full = path.join(dir, name);
+    if (!fs.existsSync(path.join(full, 'manifest.json'))) continue;
+    try {
+      installShim(full);
+      const ext = await ses.extensions.loadExtension(full);
+      if (TEST) console.log(`TEST_EXT_LOADED ${ext.name}`);
+    } catch (e) {
+      console.warn(`Extension "${name}" failed to load: ${e.message}`);
+    }
+  }
+}
+
 // Keep Google pages inside the tab; send everything else to the system browser.
 function guard(wc) {
   const external = (url) => { if (/^(https?|mailto):/i.test(url)) shell.openExternal(url); };
@@ -135,7 +207,7 @@ function createView(acct) {
   win.contentView.addChildView(view);
   views.set(acct.id, view);
   layout();
-  wc.loadURL(GMAIL_URL);
+  loadExtensions(wc.session).finally(() => wc.loadURL(GMAIL_URL));
   return view;
 }
 

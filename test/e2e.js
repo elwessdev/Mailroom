@@ -29,7 +29,7 @@ const server = http.createServer((req, res) => {
 
 async function cdp(port, match) {
   const list = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
-  const t = list.find((x) => x.type === 'page' && match(x));
+  const t = list.find((x) => (x.type === 'page' || x.type === 'service_worker') && match(x));
   assert(t, 'CDP target not found');
   const ws = new WebSocket(t.webSocketDebuggerUrl);
   await new Promise((r) => (ws.onopen = r));
@@ -45,8 +45,9 @@ async function cdp(port, match) {
 }
 
 function launch(port, url) {
+  fs.cpSync(path.join(__dirname, 'fixtures', 'probe-ext'), path.join(userData, 'extensions', 'probe'), { recursive: true });
   const child = spawn(electron, [root, `--remote-debugging-port=${port}`, ...(process.env.GT_NO_SANDBOX ? ['--no-sandbox'] : [])], {
-    env: { ...process.env, MAILROOM_TEST: '1', MAILROOM_USERDATA: userData, MAILROOM_START_URL: url },
+    env: { ...process.env, MAILROOM_TEST: '1', MAILROOM_TEST_CLICK: '1', MAILROOM_USERDATA: userData, MAILROOM_START_URL: url },
   });
   const out = [];
   child.stdout.on('data', (d) => out.push(...d.toString().split('\n').filter(Boolean)));
@@ -89,6 +90,12 @@ async function waitFor(fn, what, ms = 15000) {
       return p.length === 2 ? p : null;
     }, 'two account pages');
     const [A, B] = await Promise.all(pages.map((p) => cdp(port, (t) => t.id === p.id)));
+
+    // extensions: a probe extension uses chrome.notifications / permissions / storage.sync, then gets a click
+    await waitFor(() => app.out.find((l) => l === 'TEST_EXT_NOTIFY Probe title | perm:true sync:object'), 'extension notification');
+    const sw = await waitFor(() => cdp(port, (t) => t.type === 'service_worker' || t.url.startsWith('chrome-extension://')).catch(() => null), 'extension worker');
+    await waitFor(async () => (await sw.eval('self.clicked')) === 'probe', 'click delivered to extension');
+    console.log('ok  extension loads; chrome.notifications/permissions/storage.sync work; click reaches the extension');
 
     // user agent
     const ua = await A.eval('navigator.userAgent');
