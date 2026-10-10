@@ -7,7 +7,7 @@
   "license": "MIT",
   "author": {
     "name": "Mailroom contributors",
-    "email": "mailroom@example.invalid"
+    "email": "benaliosama3@gmail.com"
   },
   "scripts": {
     "start": "electron .",
@@ -31,7 +31,7 @@
       ],
       "category": "Network;Email",
       "icon": "assets/icon.png",
-      "maintainer": "Mailroom contributors <mailroom@example.invalid>",
+      "maintainer": "Mailroom contributors <benaliosama3@gmail.com>",
       "synopsis": "Multiple Gmail accounts in one tabbed window",
       "mimeTypes": [
         "x-scheme-handler/mailto"
