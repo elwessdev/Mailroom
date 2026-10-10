@@ -32,7 +32,7 @@ npm test   # unit tests + an end-to-end run against a fake Gmail on localhost
 
 ```bash
 npm run dist   # dist/*.deb and dist/*.AppImage
-sudo apt install ./dist/mailroom_0.3.1_amd64.deb
+sudo apt install ./dist/mailroom_0.3.2_amd64.deb
 ```
 
 ## Extensions (experimental)
@@ -40,7 +40,7 @@ sudo apt install ./dist/mailroom_0.3.1_amd64.deb
 Unpacked Chrome extensions in `~/.config/Mailroom/extensions/<name>/` are loaded into every account tab at
 startup. Electron implements only part of the extension API, so Mailroom supplies `chrome.notifications`
 (native notification + sound; clicking switches to the tab), `chrome.permissions` (always granted) and
-`chrome.storage.sync` (backed by local storage). To do that it adds one line to the top of each extension's
+`chrome.storage.sync` (Electron's version throws on every call, so it is replaced by local storage, also inside content scripts). To do that it adds one line to the top of each extension's
 service worker.
 
 Install one from the Chrome Web Store by its id (the 32-letter id in the store URL):

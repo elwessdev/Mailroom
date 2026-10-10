@@ -12,7 +12,7 @@ if (location.protocol === 'chrome-extension:') {
     if (!c.permissions) c.permissions = {
       contains: (p, cb) => done(cb, true), request: (p, cb) => done(cb, true), remove: (p, cb) => done(cb, false),
       getAll: (cb) => done(cb, { permissions: [], origins: [] }), onAdded: none, onRemoved: none };
-    if (c.storage && !c.storage.sync) c.storage.sync = c.storage.local;
+    if (c.storage) c.storage.sync = c.storage.local; // Electron's sync exists but every call throws
     if (c.tabs && window.__mrCreateTab) c.tabs.create = (o, cb) => { window.__mrCreateTab(o && o.url); return done(cb, { id: 1000, url: o && o.url, active: true }); };
   } catch (e) {} })();`);
 }

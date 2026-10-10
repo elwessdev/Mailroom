@@ -102,13 +102,19 @@ async function waitFor(fn, what, ms = 15000) {
     await waitFor(() => app.out.find((l) => l === 'TEST_EXT_NOTIFY Probe title | perm:true sync:object'), 'extension notification');
     const sw = await waitFor(() => cdp(port, (t) => t.type === 'service_worker').catch(() => null), 'extension worker');
     await waitFor(async () => (await sw.eval('self.clicked')) === 'probe', 'click delivered to extension');
-    console.log('ok  extension loads; chrome.notifications/permissions/storage.sync work; click reaches the extension');
+    assert.strictEqual(await waitFor(async () => { const v = await sw.eval('self.syncResult'); return v !== 'pending' && v; }, 'worker sync result'), 'ok', 'chrome.storage.sync write/read in the service worker');
+    console.log('ok  extension loads; chrome.notifications/permissions work, chrome.storage.sync really writes; click reaches the extension');
     await waitFor(() => hits.find((h) => h.path === '/tab-test'), 'chrome.tabs.create window');
     const pop = await waitFor(() => hits.find((h) => h.path === '/popup-test'), 'extension popup window');
-    assert.strictEqual(pop.query, 'perm=true&sync=object', 'popup page shims: ' + pop.query);
+    assert.strictEqual(pop.query, 'perm=true&sync=ok', 'popup page shims: ' + pop.query);
     await waitFor(() => hits.find((h) => h.path === '/tab-test2'), 'chrome.tabs.create from an extension page');
     assert(hits.every((h) => /Firefox\//.test(h.ua) && !/Electron/.test(h.ua)), 'extension window UA: ' + JSON.stringify(hits));
     console.log('ok  chrome.tabs.create opens a window with the session; extension popup page loads and runs');
+
+    for (const pg of [A, B]) {
+      assert.strictEqual(await waitFor(() => pg.eval('document.documentElement.dataset.mrCs'), 'content script sync result'), 'ok', 'chrome.storage.sync write/read in a content script');
+    }
+    console.log('ok  content scripts can use chrome.storage.sync (what Mailtrack sign-in needs)');
 
     // user agent
     const ua = await A.eval('navigator.userAgent');

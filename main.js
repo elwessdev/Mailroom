@@ -103,12 +103,16 @@ function spoofClientHints(wc) {
 // Unpacked Chrome extensions in <userData>/extensions/<name>/ are loaded into every account session.
 // Electron lacks chrome.notifications, chrome.permissions and chrome.storage.sync, so each extension's
 // service worker gets one extra line (idempotent) that installs shims from sw-preload.js.
-const SHIM_MARK = '/*mailroom-shim-3*/';
+const SHIM_MARK = '/*mailroom-shim-4*/';
 const SHIM_LINE = SHIM_MARK + "try{if(typeof chrome!=='undefined'){" +
   "if(!chrome.notifications&&self.__mrNotifications)chrome.notifications=self.__mrNotifications;" +
   "if(!chrome.permissions&&self.__mrPermissions)chrome.permissions=self.__mrPermissions;" +
   "if(chrome.tabs&&self.__mrTabs)chrome.tabs.create=self.__mrTabs.create;" +
-  "if(chrome.storage&&!chrome.storage.sync)chrome.storage.sync=chrome.storage.local;}}catch(e){}\n";
+  "if(chrome.storage)chrome.storage.sync=chrome.storage.local;}}catch(e){}\n";
+// Electron's chrome.storage.sync exists but every call throws, so it is always replaced by local storage.
+// Content scripts get the same one-liner (they run in isolated worlds the page preload cannot reach).
+const CS_MARK = '/*mailroom-cs-1*/';
+const CS_LINE = CS_MARK + "try{if(chrome.storage)chrome.storage.sync=chrome.storage.local}catch(e){}\n";
 
 function installShim(dir) {
   try {
@@ -120,6 +124,13 @@ function installShim(dir) {
     if (code.startsWith(SHIM_MARK)) return;
     if (code.startsWith('/*mailroom-shim-')) code = code.slice(code.indexOf('\n') + 1); // older shim line
     fs.writeFileSync(file, SHIM_LINE + code);
+    for (const cs of manifest.content_scripts || []) {
+      for (const f of cs.js || []) {
+        const p = path.join(dir, f);
+        const c = fs.readFileSync(p, 'utf8');
+        if (!c.startsWith(CS_MARK)) fs.writeFileSync(p, CS_LINE + c);
+      }
+    }
   } catch {}
 }
 
