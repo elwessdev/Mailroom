@@ -43,7 +43,9 @@ function ask(title, value = '') {
     if (dlg.open) return resolve(null);
     $('dlg-title').textContent = title;
     $('dlg-input').value = value;
+    window.tabs.dialog(true); // main hides the Gmail views, which would otherwise cover this dialog
     dlg.addEventListener('close', () => {
+      window.tabs.dialog(false);
       const v = $('dlg-input').value.trim();
       resolve(dlg.returnValue === 'ok' && v ? v : null);
     }, { once: true });

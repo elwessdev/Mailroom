@@ -32,7 +32,7 @@ npm test   # unit tests + an end-to-end run against a fake Gmail on localhost
 
 ```bash
 npm run dist   # dist/*.deb and dist/*.AppImage
-sudo apt install ./dist/mailroom_0.2.1_amd64.deb
+sudo apt install ./dist/mailroom_0.2.2_amd64.deb
 ```
 
 ## Notes

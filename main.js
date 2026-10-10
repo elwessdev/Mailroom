@@ -30,6 +30,7 @@ let win, tray, quitting = false;
 let data = { accounts: [], active: null, settings: { startMinimized: false, launchAtLogin: false, sound: true, gmailNotifications: false } };
 const views = new Map();   // id -> WebContentsView
 const unread = new Map();  // id -> number
+let overlay = false;       // a tab-bar dialog is open: hide the Gmail views so it is visible
 
 // ---------- persistence ----------
 function load() {
@@ -143,7 +144,7 @@ function layout() {
   const [w, h] = win.getContentSize();
   for (const [id, v] of views) {
     v.setBounds({ x: 0, y: TAB_H, width: w, height: Math.max(0, h - TAB_H) });
-    v.setVisible(id === data.active);
+    v.setVisible(id === data.active && !overlay);
   }
 }
 
@@ -348,6 +349,12 @@ function wireIpc() {
       { label: 'Remove…', click: () => removeAccount(id) },
     ]).popup({ window: win });
   });
+  ipcMain.on('dialog', (_e, open) => {
+    overlay = !!open;
+    if (TEST) console.log(`TEST_OVERLAY ${overlay}`);
+    layout();
+    if (!overlay) views.get(data.active)?.webContents.focus();
+  });
   ipcMain.on('settings-menu', () => Menu.buildFromTemplate(settingItems()).popup({ window: win }));
 }
 
@@ -368,7 +375,7 @@ function createWindow() {
   win.on('resize', layout);
   win.on('close', (e) => { if (!quitting) { e.preventDefault(); win.hide(); } });
   win.once('ready-to-show', () => {
-    if (!data.settings.startMinimized && !process.argv.includes('--hidden')) showWindow();
+    if (!TEST && !data.settings.startMinimized && !process.argv.includes('--hidden')) showWindow();
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   app.on('browser-window-focus', () => views.get(data.active)?.webContents.focus());

@@ -69,11 +69,19 @@ async function waitFor(fn, what, ms = 15000) {
     const ui = await waitFor(() => cdp(port, (t) => t.url.includes('renderer/index.html')).catch(() => null), 'tab bar');
     console.log('ok  window + tab bar UI opened');
 
-    await ui.eval(`window.tabs.add('Alpha')`);
-    await sleep(500);
-    await ui.eval(`window.tabs.add('Beta')`);
-    await waitFor(async () => (await ui.eval(`document.querySelectorAll('.tab').length`)) === 2, 'two tabs');
-    console.log('ok  two accounts added');
+    // First account through the real "+" dialog (no Gmail view yet), second one with a view already open.
+    const count = (line) => app.out.filter((l) => l === line).length;
+    for (const [i, name] of ['Alpha', 'Beta'].entries()) {
+      // An empty profile opens the dialog by itself; otherwise click "+".
+      if (!(await ui.eval(`document.getElementById('dlg').open`))) await ui.eval(`document.getElementById('add').click()`);
+      await waitFor(async () => (await ui.eval(`document.getElementById('dlg').open`)) === true, 'dialog open');
+      await waitFor(() => count('TEST_OVERLAY true') > i, 'Gmail views hidden while dialog open');
+      await ui.eval(`document.getElementById('dlg-input').value='${name}'; document.querySelector('#form button[value=ok]').click()`);
+      await waitFor(() => count('TEST_OVERLAY false') > i, 'overlay cleared');
+      await waitFor(async () => (await ui.eval(`document.querySelectorAll('.tab').length`)) === i + 1, 'tab ' + name);
+    }
+    await waitFor(async () => (await ui.eval(`document.querySelectorAll('.tab').length`)) === 2, 'two tabs (have ' + (await ui.eval(`[...document.querySelectorAll('.tab .label')].map(x=>x.textContent).join('+')`)) + ', out=' + app.out.slice(-6).join(';') + ')');
+    console.log('ok  two accounts added through the real + dialog (views hidden while it is open)');
 
     const pages = await waitFor(async () => {
       const list = await (await fetch(`http://127.0.0.1:${port}/json`)).json();

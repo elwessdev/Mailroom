@@ -11,5 +11,6 @@ contextBridge.exposeInMainWorld('tabs', {
   rename: (id, label) => ipcRenderer.send('rename', id, label),
   reorder: (ids) => ipcRenderer.send('reorder', ids),
   tabMenu: (id) => ipcRenderer.send('tab-menu', id),
+  dialog: (open) => ipcRenderer.send('dialog', !!open),
   settingsMenu: () => ipcRenderer.send('settings-menu'),
 });

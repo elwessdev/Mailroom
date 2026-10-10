@@ -1,7 +1,7 @@
 {
   "name": "mailroom",
   "productName": "Mailroom",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Use several Gmail accounts in one window, one tab each, with native notifications",
   "main": "main.js",
   "license": "MIT",
