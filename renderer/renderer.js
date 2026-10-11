@@ -7,12 +7,20 @@ function render() {
   box.replaceChildren();
   for (const a of state.accounts) {
     const tab = document.createElement('div');
-    tab.className = 'tab' + (a.id === state.active ? ' active' : '');
+    tab.className = 'tab' + (a.id === state.active ? ' active' : '') + (a.muted ? ' muted' : '');
+    if (a.muted) tab.title = a.mutedText + ' (click the bell to unmute)';
     tab.draggable = true;
     const label = document.createElement('span');
     label.className = 'label';
     label.textContent = a.label;
     tab.append(label);
+    if (a.muted) {
+      const bell = document.createElement('span');
+      bell.className = 'bell';
+      bell.textContent = '🔕';
+      bell.addEventListener('click', (e) => { e.stopPropagation(); window.tabs.mute(a.id, 'off'); });
+      tab.append(bell);
+    }
     if (a.unread > 0) {
       const b = document.createElement('span');
       b.className = 'badge';

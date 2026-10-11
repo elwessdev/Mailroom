@@ -7,8 +7,19 @@ Several Gmail accounts in one window, one tab each, with native desktop notifica
 It wraps the real Gmail web page (Electron, plain JavaScript, no telemetry).
 
 - Each account has its own persistent, isolated session (`persist:acct-<id>`).
-- Unread count per tab, total in the window title and tray tooltip; native notification when the count rises.
-- Notifications show sender, subject and a preview (read from Gmail's unread feed with that account's own session; never logged or stored) and play the system "new message" sound (toggle: ⋮ menu or tray).
+- Unread count per tab (from Gmail's unread feed, so opening a thread does not make it flicker), total in the
+  window title and tray tooltip.
+- Notifications: one per new mail with sender, subject and preview, plus the system "new message" sound.
+  Each mail is announced once, mail that was already unread when the app started is not announced, and a
+  burst of mail becomes a single summary. Clicking a notification opens that mail in its tab. Nothing is shown
+  for the tab you are looking at, and stale notifications close when you open that tab. If the feed is
+  unavailable, page-title counts are used instead. The feed is read with that account's own session, only to
+  build the notification; it is never logged or stored.
+- Mute per tab (1 hour, 8 hours, until tomorrow morning, or until you turn it back on): right-click the tab,
+  use the tray menu, or press the **Mute** buttons on the notification (where your desktop shows action
+  buttons). A muted tab shows a 🔕 you can click to unmute, keeps counting unread mail, and does not announce
+  the mail that arrived while muted when you unmute. **Notifications** and **Notification sound** switches are
+  in the ⋮ and tray menus.
 - Tray icon, close-to-tray, single instance, `mailto:` handler, optional start minimized / launch at login.
 - Shortcuts: `Ctrl+T` add account, `Ctrl+Tab` / `Ctrl+Shift+Tab` and `Ctrl+1..9` switch, `Ctrl+R` reload. `Ctrl+W` is deliberately ignored.
 - Right-click a tab to rename, reload or remove; drag tabs to reorder.
@@ -32,7 +43,7 @@ npm test   # unit tests + an end-to-end run against a fake Gmail on localhost
 
 ```bash
 npm run dist   # dist/*.deb and dist/*.AppImage
-sudo apt install ./dist/mailroom_0.3.2_amd64.deb
+sudo apt install ./dist/mailroom_0.4.0_amd64.deb
 ```
 
 ## Extensions (experimental)

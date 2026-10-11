@@ -27,9 +27,11 @@ const ICON = path.join(__dirname, 'assets', 'icon.png');
 const STORE = () => path.join(app.getPath('userData'), 'accounts.json');
 
 let win, tray, quitting = false;
-let data = { accounts: [], active: null, settings: { startMinimized: false, launchAtLogin: false, sound: true, gmailNotifications: false } };
+let data = { accounts: [], active: null, settings: { startMinimized: false, launchAtLogin: false, sound: true, notifications: true, gmailNotifications: false } };
 const views = new Map();   // id -> WebContentsView
 const unread = new Map();  // id -> number
+const mailState = new Map(); // id -> { notified, seeded, feedOk, timer, busy, notes }
+const muteTimers = new Map();
 let overlay = false;       // a tab-bar dialog is open: hide the Gmail views so it is visible
 
 // ---------- persistence ----------
@@ -50,7 +52,10 @@ const total = () => [...unread.values()].reduce((a, b) => a + b, 0);
 
 function publicState() {
   return {
-    accounts: data.accounts.map((a) => ({ id: a.id, label: a.label, unread: unread.get(a.id) || 0 })),
+    accounts: data.accounts.map((a) => {
+      const muted = lib.isMuted(a);
+      return { id: a.id, label: a.label, unread: unread.get(a.id) || 0, muted, mutedText: muted ? lib.describeMute(a.mutedUntil) : '' };
+    }),
     active: data.active,
   };
 }
@@ -150,7 +155,11 @@ function hookExtensionWorkers(ses) {
     const accountId = () => data.accounts.find((a) => views.get(a.id)?.webContents.session === ses)?.id;
     const fire = (name, id, index) => { try { worker.send('ext-notify-event', name, id, index); } catch {} };
     worker.ipc.on('ext-notify', (_e, { id, title, message, buttons }) => {
-      if (TEST) console.log(`TEST_EXT_NOTIFY ${title} | ${message}`);
+      if (TEST) {
+        console.log(`TEST_EXT_NOTIFY ${title} | ${message}`);
+        if (process.env.MAILROOM_TEST_CLICK) setTimeout(() => fire('onClicked', id), 500);
+        return; // tests never pop up real notifications or play sounds
+      }
       if (data.settings.sound) playSound();
       if (!Notification.isSupported()) return;
       const n = new Notification({
@@ -162,7 +171,6 @@ function hookExtensionWorkers(ses) {
       n.on('close', () => { extNotes.delete(id); fire('onClosed', id, true); });
       extNotes.set(id, n);
       n.show();
-      if (TEST && process.env.MAILROOM_TEST_CLICK) setTimeout(() => fire('onClicked', id), 500);
     });
     worker.ipc.on('ext-tab-create', (_e, url) => openFromExtension(ses, accountId(), url));
     worker.ipc.on('ext-notify-clear', (_e, id) => { extNotes.get(id)?.close(); extNotes.delete(id); });
@@ -289,28 +297,78 @@ function select(id) {
   save();
   layout();
   views.get(id)?.webContents.focus();
+  if (win?.isVisible() && win.isFocused()) closeNotes(id);
   refresh();
 }
 
 // ---------- unread tracking + notifications ----------
+// Gmail's unread feed is the source of truth: every mail has an id, and each id is announced at most once
+// (no repeats when you open a thread and the page title changes). The first check only records what is
+// already unread, so starting the app never notifies about old mail. Page titles are a fallback only.
+function st(id) {
+  if (!mailState.has(id)) mailState.set(id, { notified: new Set(), seeded: false, feedOk: null, timer: null, busy: false, notes: new Set() });
+  return mailState.get(id);
+}
+
 function onTitle(id, title) {
+  const s = st(id);
+  scheduleCheck(id);
   const n = lib.parseUnread(title);
-  if (n === null) return;
+  if (n !== null) s.titleCount = n;   // baseline for the fallback below
+  if (s.feedOk !== false || n === null) return;
   const prev = unread.get(id);
   unread.set(id, n);
-  if (prev !== undefined && n > prev) notify(id, n, n - prev);
+  if (prev !== undefined && n > prev) notify(id, n, [], n - prev);
   refresh();
 }
 
-// Unread mail from Gmail's Atom feed, fetched with that account's own session. Used only for the
-// notification text; never logged or stored.
-async function latestMail(id) {
+function scheduleCheck(id, delay = 1500) {
+  const s = st(id);
+  clearTimeout(s.timer);
+  s.timer = setTimeout(() => checkMail(id), delay);
+}
+
+// Unread mail from the feed, fetched with that account's own session; used only to build notifications.
+async function fetchFeed(id) {
   try {
-    const feed = new URL('/mail/u/0/feed/atom', GMAIL_URL).href;
-    const res = await views.get(id).webContents.session.fetch(feed, { credentials: 'include' });
-    return res.ok ? lib.parseAtomFeed(await res.text()) : [];
+    const url = new URL('/mail/u/0/feed/atom', GMAIL_URL).href;
+    const res = await views.get(id).webContents.session.fetch(url, { credentials: 'include', cache: 'no-store' });
+    if (!res.ok) return null;
+    const feed = lib.parseAtomFeed(await res.text());
+    return feed.valid ? feed : null;
   } catch {
-    return [];
+    return null;
+  }
+}
+
+async function checkMail(id) {
+  const s = st(id);
+  if (s.busy || !views.has(id)) return;
+  s.busy = true;
+  try {
+    const feed = await fetchFeed(id);
+    if (!account(id)) return;
+    if (!feed) {
+      if (s.feedOk === null) {
+        s.feedOk = false;   // no feed: fall back to the counts in page titles, starting from the last one seen
+        if (s.titleCount !== undefined) { unread.set(id, s.titleCount); refresh(); }
+      }
+      return;
+    }
+    s.feedOk = true;
+    unread.set(id, feed.count);
+    const fresh = feed.mails.filter((m) => !s.notified.has(m.id));
+    for (const m of feed.mails) s.notified.add(m.id);
+    if (s.notified.size > 500) s.notified = new Set(feed.mails.map((m) => m.id));
+    if (!s.seeded) {
+      s.seeded = true;
+      if (TEST) console.log(`TEST_SEEDED ${account(id).label} ${feed.count}`);
+    } else if (fresh.length) {
+      notify(id, feed.count, fresh, fresh.length);
+    }
+    refresh();
+  } finally {
+    s.busy = false;
   }
 }
 
@@ -321,17 +379,85 @@ function playSound() {
   });
 }
 
-async function notify(id, count, added) {
+function notify(id, count, mails, added) {
   const a = account(id);
   if (!a) return;
-  const mails = await latestMail(id);
-  const { title, body } = lib.formatNotification(a.label, count, added, mails);
-  if (TEST) console.log(`TEST_NOTIFY ${a.label} ${count} +${added} | ${title} | ${body.replace(/\n/g, ' / ')}`);
-  if (data.settings.sound) playSound();
-  if (!Notification.isSupported()) return;
-  const n = new Notification({ title, body, icon: ICON, silent: true });
-  n.on('click', () => { showWindow(); select(id); });
+  const looking = !TEST && !!win?.isVisible() && win.isFocused() && data.active === id; // you are reading this tab
+  const quiet = lib.quietReason({ enabled: data.settings.notifications, muted: lib.isMuted(a), looking });
+  if (quiet) {
+    if (TEST) console.log(`TEST_SUPPRESSED ${a.label} ${quiet}`);
+    return;
+  }
+  const items = mails.length && mails.length <= 3
+    ? mails.map((m) => ({ ...lib.formatMail(a.label, m), link: m.link }))
+    : [{ ...lib.formatSummary(a.label, count, mails, added), link: '' }];
+  if (data.settings.sound && !TEST) playSound();
+  for (const item of items) showNote(id, a, item);
+}
+
+function showNote(id, a, { title, body, link }) {
+  if (TEST) console.log(`TEST_NOTIFY ${a.label} | ${title} | ${body.replace(/\n/g, ' / ')}`);
+  if (TEST || !Notification.isSupported()) return; // tests never pop up real notifications
+  const n = new Notification({
+    title, body, icon: ICON, silent: true,
+    actions: [{ type: 'button', text: 'Mute 1 hour' }, { type: 'button', text: 'Mute until tomorrow' }],
+  });
+  n.on('click', () => {
+    showWindow();
+    select(id);
+    if (link && lib.isGoogleHost(link)) views.get(id)?.webContents.loadURL(link); // open that mail
+  });
+  n.on('action', (_e, index) => mute(id, index === 0 ? '1h' : 'tomorrow'));
+  n.on('close', () => st(id).notes.delete(n));
+  st(id).notes.add(n);
   n.show();
+}
+
+// Drop notifications that are still on screen for an account (you are now looking at it, or muted it).
+function closeNotes(id) {
+  const s = mailState.get(id);
+  if (!s) return;
+  for (const n of [...s.notes]) n.close();
+  s.notes.clear();
+}
+
+// ---------- mute ----------
+function mute(id, kind) {
+  const a = account(id);
+  if (!a) return;
+  if (kind === 'off') delete a.mutedUntil;
+  else a.mutedUntil = lib.muteDeadline(kind);
+  save();
+  scheduleUnmute(id);
+  if (lib.isMuted(a)) closeNotes(id);
+  if (TEST) console.log(`TEST_MUTE ${a.label} ${kind}`);
+  refresh();
+}
+
+function scheduleUnmute(id) {
+  clearTimeout(muteTimers.get(id));
+  const a = account(id);
+  if (!lib.isMuted(a) || a.mutedUntil >= lib.FOREVER) return;
+  muteTimers.set(id, setTimeout(refresh, Math.min(a.mutedUntil - Date.now() + 500, 2 ** 31 - 1)));
+}
+
+function muteItems(id) {
+  const a = account(id);
+  if (lib.isMuted(a)) {
+    return [
+      { label: lib.describeMute(a.mutedUntil), enabled: false },
+      { label: 'Unmute notifications', click: () => mute(id, 'off') },
+    ];
+  }
+  return [{
+    label: 'Mute notifications',
+    submenu: [
+      { label: 'For 1 hour', click: () => mute(id, '1h') },
+      { label: 'For 8 hours', click: () => mute(id, '8h') },
+      { label: 'Until tomorrow morning', click: () => mute(id, 'tomorrow') },
+      { label: 'Until I turn it back on', click: () => mute(id, 'forever') },
+    ],
+  }];
 }
 
 // ---------- account management ----------
@@ -355,6 +481,10 @@ async function removeAccount(id) {
   win.contentView.removeChildView(view);
   views.delete(id);
   unread.delete(id);
+  closeNotes(id);
+  clearTimeout(mailState.get(id)?.timer);
+  mailState.delete(id);
+  clearTimeout(muteTimers.get(id));
   const ses = view.webContents.session;
   view.webContents.close();
   await ses.clearStorageData();
@@ -412,6 +542,7 @@ function settingItems() {
   });
   return [
     toggle('startMinimized', 'Start minimized'),
+    toggle('notifications', 'Notifications'),
     toggle('sound', 'Notification sound'),
     toggle('gmailNotifications', "Gmail's own notifications (needs restart)"),
     toggle('launchAtLogin', 'Launch at login', applyAutostart),
@@ -425,6 +556,11 @@ function buildTrayMenu() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show', click: showWindow },
     ...data.accounts.map((a) => ({ label: `Compose in ${a.label}`, click: () => compose(a.id, lib.composeUrl()) })),
+    { type: 'separator' },
+    ...data.accounts.map((a) => ({
+      label: lib.isMuted(a) ? `${a.label}: ${lib.describeMute(a.mutedUntil).toLowerCase()}` : `${a.label}: notifications on`,
+      submenu: muteItems(a.id),
+    })),
     { type: 'separator' },
     ...settingItems(),
     { type: 'separator' },
@@ -465,6 +601,7 @@ function wireIpc() {
   ipcMain.handle('state', () => publicState());
   ipcMain.on('add', (_e, label) => { if (typeof label === 'string' && label.trim()) addAccount(label.trim().slice(0, 40)); });
   ipcMain.on('select', (_e, id) => select(id));
+  ipcMain.on('mute', (_e, id, kind) => { if (['1h', '8h', 'tomorrow', 'forever', 'off'].includes(kind)) mute(id, kind); });
   ipcMain.on('rename', (_e, id, label) => {
     const a = account(id);
     if (a && typeof label === 'string' && label.trim()) { a.label = label.trim().slice(0, 40); save(); refresh(); }
@@ -481,6 +618,8 @@ function wireIpc() {
     Menu.buildFromTemplate([
       { label: 'Rename…', click: () => win.webContents.send('request-rename', id) },
       { label: 'Reload', click: () => views.get(id)?.webContents.reload() },
+      { type: 'separator' },
+      ...muteItems(id),
       { type: 'separator' },
       { label: 'Remove…', click: () => removeAccount(id) },
     ]).popup({ window: win });
@@ -516,6 +655,7 @@ function createWindow() {
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.on('resize', layout);
+  win.on('focus', () => closeNotes(data.active));
   win.on('close', (e) => { if (!quitting) { e.preventDefault(); win.hide(); } });
   win.once('ready-to-show', () => {
     if (!TEST && !data.settings.startMinimized && !process.argv.includes('--hidden')) showWindow();
@@ -539,7 +679,8 @@ if (!app.requestSingleInstanceLock()) {
     load();
     wireIpc();
     createWindow();
-    for (const a of data.accounts) createView(a);
+    for (const a of data.accounts) { createView(a); scheduleUnmute(a.id); }
+    setInterval(() => { for (const a of data.accounts) scheduleCheck(a.id, 0); }, 60000);
     if (!account(data.active)) data.active = data.accounts[0]?.id ?? null;
     layout();
     createTray();

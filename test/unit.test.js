@@ -13,6 +13,7 @@ test('parseUnread', () => {
   assert.strictEqual(lib.parseUnread('Inbox (3) - name@gmail.com - Gmail'), 3);
   assert.strictEqual(lib.parseUnread('Inbox - name@gmail.com - Gmail'), 0);
   assert.strictEqual(lib.parseUnread('Gmail'), null);
+  assert.strictEqual(lib.parseUnread('Lunch plans - name@gmail.com - Gmail'), null); // a thread says nothing about unread
   assert.strictEqual(lib.parseUnread(''), null);
 });
 
@@ -34,20 +35,53 @@ test('mailto', () => {
   assert.strictEqual(lib.mailtoUrl('mailto:a@b.c'), 'https://mail.google.com/mail/?extsrc=mailto&url=mailto%3Aa%40b.c');
 });
 
-const FEED = `<?xml version="1.0"?><feed><title>Gmail - Inbox</title><fullcount>2</fullcount>
-<entry><title>Lunch &amp; plans?</title><summary>Are you free at noon&#39;s end</summary><author><name>Sam Lee</name><email>sam@x.com</email></author></entry>
-<entry><title>Invoice</title><summary>Attached</summary><author><name>Billing</name></author></entry></feed>`;
+const FEED = `<?xml version="1.0"?><feed><title>Gmail - Inbox</title><fullcount>7</fullcount>
+<entry><title>Lunch &amp; plans?</title><summary>Are you free at noon&#39;s end</summary><id>tag:gmail.google.com,2004:1</id><link rel="alternate" href="https://mail.google.com/mail?account_id=a&amp;message_id=1&amp;view=conv"/><author><name>Sam Lee</name><email>sam@x.com</email></author></entry>
+<entry><title>Invoice</title><summary>Attached</summary><id>tag:gmail.google.com,2004:2</id><author><name>Billing</name></author></entry></feed>`;
 
-test('atom feed + notification text', () => {
-  const mails = lib.parseAtomFeed(FEED);
-  assert.deepStrictEqual(mails[0], { from: 'Sam Lee', subject: 'Lunch & plans?', summary: "Are you free at noon's end" });
-  assert.strictEqual(mails.length, 2);
-  const one = lib.formatNotification('Work', 5, 1, mails);
-  assert.strictEqual(one.title, 'Sam Lee - Work');
-  assert.match(one.body, /Lunch & plans\?\nAre you free/);
-  const two = lib.formatNotification('Work', 5, 2, mails);
+test('atom feed parsing', () => {
+  const f = lib.parseAtomFeed(FEED);
+  assert.strictEqual(f.valid, true);
+  assert.strictEqual(f.count, 7); // the feed's own total, not just the entries it lists
+  assert.strictEqual(f.mails.length, 2);
+  assert.deepStrictEqual(f.mails[0], {
+    id: 'tag:gmail.google.com,2004:1', from: 'Sam Lee', subject: 'Lunch & plans?', summary: "Are you free at noon's end",
+    link: 'https://mail.google.com/mail?account_id=a&message_id=1&view=conv',
+  });
+  assert.strictEqual(f.mails[1].link, '');
+  assert.strictEqual(lib.parseAtomFeed('<html>Sign in</html>').valid, false);
+});
+
+test('notification text', () => {
+  const [m1, m2] = lib.parseAtomFeed(FEED).mails;
+  assert.deepStrictEqual(lib.formatMail('Work', m1), { title: 'Sam Lee - Work', body: "Lunch & plans?\nAre you free at noon's end" });
+  const two = lib.formatSummary('Work', 5, [m1, m2]);
   assert.strictEqual(two.title, 'Work: 2 new messages');
   assert.strictEqual(two.body, 'Sam Lee: Lunch & plans?\nBilling: Invoice');
-  assert.strictEqual(lib.formatNotification('Work', 5, 4, mails).body.split('\n').pop(), '+2 more');
-  assert.strictEqual(lib.formatNotification('Work', 5, 1, []).body, '5 unread');
+  const many = lib.formatSummary('Work', 9, [m1, m2, m1, m2, m1]);
+  assert.strictEqual(many.body.split('\n').pop(), '+2 more');
+  assert.deepStrictEqual(lib.formatSummary('Work', 5, [], 1), { title: 'Work: new mail', body: '5 unread' });
+  assert.strictEqual(lib.formatSummary('Work', 5, [], 3).title, 'Work: 3 new messages');
+});
+
+test('mute deadlines', () => {
+  const now = new Date(2026, 9, 10, 15, 30).getTime(); // Oct 10 2026, 15:30 local
+  assert.strictEqual(lib.muteDeadline('1h', now), now + 3600e3);
+  assert.strictEqual(lib.muteDeadline('8h', now), now + 8 * 3600e3);
+  const t = new Date(lib.muteDeadline('tomorrow', now));
+  assert.deepStrictEqual([t.getDate(), t.getHours(), t.getMinutes()], [11, 8, 0]);
+  const early = new Date(lib.muteDeadline('tomorrow', new Date(2026, 9, 10, 2, 0).getTime()));
+  assert.strictEqual(early.getDate(), 11); // "tomorrow morning", even at 02:00
+  assert.strictEqual(lib.muteDeadline('forever', now), lib.FOREVER);
+  assert.ok(lib.isMuted({ mutedUntil: now + 1 }, now));
+  assert.ok(!lib.isMuted({ mutedUntil: now }, now));
+  assert.ok(!lib.isMuted({}, now) && !lib.isMuted(undefined, now));
+  assert.strictEqual(lib.describeMute(lib.FOREVER), 'Muted');
+});
+
+test('quiet rules', () => {
+  assert.strictEqual(lib.quietReason({ enabled: false, muted: true, looking: true }), 'off');
+  assert.strictEqual(lib.quietReason({ enabled: true, muted: true, looking: true }), 'muted');
+  assert.strictEqual(lib.quietReason({ enabled: true, muted: false, looking: true }), 'looking');
+  assert.strictEqual(lib.quietReason({ enabled: true, muted: false, looking: false }), null);
 });

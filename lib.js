@@ -63,7 +63,7 @@ function unwrapGoogleRedirect(url) {
 function parseUnread(title) {
   const m = /^[^()]*\((\d+)\)\s*-\s*[^\s@]+@\S+/.exec(title || '');
   if (m) return parseInt(m[1], 10);
-  return /-\s*[^\s@]+@[^\s@]+\.\S+/.test(title || '') ? 0 : null;
+  return /^Inbox\b.*-\s*[^\s@]+@[^\s@]+\.\S+/.test(title || '') ? 0 : null;
 }
 
 function decodeXml(s) {
@@ -71,33 +71,77 @@ function decodeXml(s) {
     .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
 }
 
-// Gmail's unread Atom feed -> [{from, subject, summary}], newest first.
+// Gmail's unread Atom feed -> { valid, count, mails: [{ id, from, subject, summary, link }] }, newest first.
+// `valid` is false when the response is not a feed (for example a sign-in page).
 function parseAtomFeed(xml) {
+  xml = String(xml);
   const tag = (block, t) => {
     const m = new RegExp(`<${t}>([\\s\\S]*?)</${t}>`).exec(block);
     return m ? decodeXml(m[1].trim()) : '';
   };
-  const out = [];
-  for (const m of String(xml).matchAll(/<entry>([\s\S]*?)<\/entry>/g)) {
-    out.push({ from: tag(m[1], 'name'), subject: tag(m[1], 'title'), summary: tag(m[1], 'summary') });
+  const mails = [];
+  for (const m of xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)) {
+    const link = /<link[^>]*\bhref="([^"]+)"/.exec(m[1]);
+    mails.push({
+      id: tag(m[1], 'id'), from: tag(m[1], 'name'), subject: tag(m[1], 'title'),
+      summary: tag(m[1], 'summary'), link: link ? decodeXml(link[1]) : '',
+    });
   }
-  return out;
+  const full = /<fullcount>(\d+)<\/fullcount>/.exec(xml);
+  return { valid: /<feed[\s>]/.test(xml), count: full ? parseInt(full[1], 10) : mails.length, mails };
 }
 
-// Notification text. `mails` may be empty (feed unavailable): fall back to counts only.
-function formatNotification(label, count, added, mails) {
-  const shown = mails.slice(0, Math.min(added, 3));
-  if (shown.length === 1 && added === 1) {
-    const m = shown[0];
-    return { title: `${m.from || 'New mail'} - ${label}`, body: [m.subject, m.summary].filter(Boolean).join('\n') };
-  }
-  const lines = shown.map((m) => `${m.from}: ${m.subject}`.trim());
-  const more = added - shown.length;
-  if (shown.length && more > 0) lines.push(`+${more} more`);
+// Text for one mail.
+function formatMail(label, mail) {
   return {
-    title: `${label}: ${added} new messages`,
+    title: `${mail.from || 'New mail'} - ${label}`,
+    body: [mail.subject, mail.summary].filter(Boolean).join('\n'),
+  };
+}
+
+// Text for several mails at once (or just a count when the feed was unavailable).
+function formatSummary(label, count, mails, added = mails.length) {
+  const shown = mails.slice(0, 3);
+  const lines = shown.map((m) => `${m.from}: ${m.subject}`.trim());
+  if (shown.length && mails.length > shown.length) lines.push(`+${mails.length - shown.length} more`);
+  return {
+    title: added === 1 ? `${label}: new mail` : `${label}: ${added} new messages`,
     body: lines.length ? lines.join('\n') : `${count} unread`,
   };
+}
+
+// ----- mute -----
+const FOREVER = Number.MAX_SAFE_INTEGER;
+
+// When a mute of the given kind ends (epoch ms): '1h', '8h', 'tomorrow' (next 8:00 local) or 'forever'.
+function muteDeadline(kind, now = Date.now()) {
+  if (kind === '1h') return now + 3600e3;
+  if (kind === '8h') return now + 8 * 3600e3;
+  if (kind === 'tomorrow') {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(8, 0, 0, 0);
+    return d.getTime();
+  }
+  return FOREVER;
+}
+
+function isMuted(account, now = Date.now()) {
+  return !!account && typeof account.mutedUntil === 'number' && account.mutedUntil > now;
+}
+
+// Why a notification should stay quiet, or null to show it: switched off, tab muted, or you are looking at it.
+function quietReason({ enabled, muted, looking }) {
+  if (!enabled) return 'off';
+  if (muted) return 'muted';
+  return looking ? 'looking' : null;
+}
+
+function describeMute(until) {
+  if (until >= FOREVER) return 'Muted';
+  const t = new Date(until);
+  const hm = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return t.toDateString() === new Date().toDateString() ? `Muted until ${hm}` : `Muted until tomorrow ${hm}`;
 }
 
 function composeUrl() {
@@ -114,5 +158,5 @@ function findMailto(argv) {
 
 module.exports = {
   buildUserAgent, buildFirefoxUserAgent, buildUserAgentMetadata, isGoogleHost, isGmailOrigin, unwrapGoogleRedirect,
-  parseUnread, parseAtomFeed, formatNotification, composeUrl, mailtoUrl, findMailto,
+  parseUnread, parseAtomFeed, formatMail, formatSummary, muteDeadline, isMuted, describeMute, quietReason, FOREVER, composeUrl, mailtoUrl, findMailto,
 };

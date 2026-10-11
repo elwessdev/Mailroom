@@ -12,12 +12,18 @@ const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'mailroom-test-'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const seen = []; // request headers seen by the fake Gmail
 const hits = []; // extension windows: { path, ua }
+const entry = (id, from, subject, summary) => ({ id, from, subject, summary });
+let mails = [entry('m1', 'Sam', 'Old mail', 'already unread at startup')]; // the fake unread feed, newest first
+const feedXml = () => `<feed><fullcount>${mails.length}</fullcount>` + mails.map((m) =>
+  `<entry><id>${m.id}</id><title>${m.subject}</title><summary>${m.summary}</summary>` +
+  `<link rel="alternate" href="https://mail.google.com/mail?message_id=${m.id}&amp;view=conv"/>` +
+  `<author><name>${m.from}</name></author></entry>`).join('') + '</feed>';
 
 const server = http.createServer((req, res) => {
   if (req.url.startsWith('/tab-test') || req.url.startsWith('/popup-test')) hits.push({ path: req.url.split('?')[0], query: req.url.split('?')[1] || '', ua: req.headers['user-agent'] });
   if (req.url.startsWith('/mail/u/0/feed/atom')) {
     res.setHeader('content-type', 'application/atom+xml');
-    res.end('<feed><entry><title>Quarterly report</title><summary>Numbers inside</summary><author><name>Pat Boss</name></author></entry><entry><title>Older</title><summary>x</summary><author><name>Z</name></author></entry></feed>');
+    res.end(feedXml());
     return;
   }
   if (req.url === '/echo') {
@@ -67,11 +73,12 @@ async function waitFor(fn, what, ms = 15000) {
   throw new Error('timeout waiting for ' + what);
 }
 
+let app;
 (async () => {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const url = `http://127.0.0.1:${server.address().port}/`;
   const port = 9300 + Math.floor(Math.random() * 500);
-  let app = launch(port, url);
+  app = launch(port, url);
   try {
     await waitFor(() => app.out.includes('TEST_READY'), 'app ready');
     const ui = await waitFor(() => cdp(port, (t) => t.url.includes('renderer/index.html')).catch(() => null), 'tab bar');
@@ -135,21 +142,56 @@ async function waitFor(fn, what, ms = 15000) {
     assert.strictEqual(await A.eval('document.cookie'), 'who=alpha');
     console.log('ok  sessions isolated (cookies + localStorage)');
 
-    // notifications: title counts
-    app.out.length = 0;
-    await A.eval(`document.title='Inbox (2) - a@example.com - Gmail'`);
-    const na = await waitFor(() => app.out.find((l) => /^TEST_NOTIFY \w+ 2 \+2 \| \w+: 2 new messages \| Pat Boss: Quarterly report \/ Z: Older$/.test(l)), 'notification for first page');
-    await B.eval(`document.title='Inbox (1) - b@example.com - Gmail'`);
-    const nb = await waitFor(() => app.out.find((l) => /^TEST_NOTIFY \w+ 1 \+1 \| Pat Boss - \w+ \| Quarterly report \/ Numbers inside$/.test(l)), 'notification for second page');
-    assert.notStrictEqual(na.split(' ')[1], nb.split(' ')[1], 'both notifications named the same account');
-    assert.deepStrictEqual([na.split(' ')[1], nb.split(' ')[1]].sort(), ['Alpha', 'Beta']);
-    await A.eval(`document.title='Inbox (1) - a@example.com - Gmail'`); // decrease: no notification
-    await sleep(400);
-    assert(!app.out.some((l) => /^TEST_NOTIFY \w+ 1 \+/.test(l) && l !== nb), 'notified on decrease');
-    await waitFor(() => app.out.includes('TEST_TOTAL 2'), 'total=2');
-    const badges = await ui.eval(`[...document.querySelectorAll('.badge')].map(b=>b.textContent).join(',')`);
-    assert.strictEqual(badges, '1,1');
-    console.log('ok  title change -> native notification, no notify on decrease, badges + total updated');
+    // ---- notifications (the unread feed decides; titles only trigger a check) ----
+    const lines = (re) => app.out.filter((l) => re.test(l));
+    const notes = (label) => lines(new RegExp(`^TEST_NOTIFY ${label} \\|`));
+    let ping = 0;
+    const check = () => Promise.all([A, B].map((p) => p.eval(`document.title='Inbox (${++ping}) - x@example.com - Gmail'`)));
+    const badges = () => ui.eval(`[...document.querySelectorAll('.badge')].map(b=>b.textContent).join(',')`);
+    const ids = JSON.parse(await ui.eval(`window.tabs.getState().then(s => JSON.stringify(Object.fromEntries(s.accounts.map(a => [a.label, a.id]))))`));
+
+    await waitFor(() => lines(/^TEST_SEEDED /).length >= 2, 'both accounts record the mail that is already unread');
+    assert.strictEqual(notes('Alpha').length + notes('Beta').length, 0, 'notified about mail that was already unread at startup');
+
+    mails = [entry('m2', 'Pat Boss', 'Quarterly report', 'Numbers inside'), ...mails];
+    await check();
+    await waitFor(() => notes('Alpha').length === 1 && notes('Beta').length === 1, 'one notification per account for the new mail');
+    assert.strictEqual(notes('Alpha')[0], 'TEST_NOTIFY Alpha | Pat Boss - Alpha | Quarterly report / Numbers inside');
+
+    // opening a thread changes the page title; coming back must not repeat the notification
+    await A.eval(`document.title='Quarterly report - x@example.com - Gmail'`); await sleep(2200);
+    await A.eval(`document.title='Inbox (2) - x@example.com - Gmail'`); await sleep(2200);
+    assert.strictEqual(notes('Alpha').length, 1, 'same mail notified twice');
+    await waitFor(async () => (await badges()) === '2,2', 'badges follow the feed (2,2), not the page title');
+    console.log('ok  new mail -> one notification (with sender/subject/preview); nothing for old mail; no repeat after opening a thread');
+
+    // mute one tab: no notification, badge still counts; muting is visible and survives
+    await ui.eval(`window.tabs.mute('${ids.Alpha}', '1h')`);
+    await waitFor(() => lines(/^TEST_MUTE Alpha 1h$/).length === 1, 'mute applied');
+    mails = [entry('m3', 'Lee', 'While muted', 'x'), ...mails];
+    await check();
+    await waitFor(() => notes('Beta').length === 2, 'the other account still notifies');
+    await waitFor(() => lines(/^TEST_SUPPRESSED Alpha muted$/).length >= 1, 'muted account suppressed');
+    assert.strictEqual(notes('Alpha').length, 1, 'muted account notified');
+    assert.strictEqual(await ui.eval(`document.querySelectorAll('.tab.muted').length`), 1, 'muted tab shows the bell');
+    assert.strictEqual(await badges(), '3,3', 'muted tab still counts unread');
+
+    // unmute: only mail that arrives afterwards is announced (no backlog flood)
+    await ui.eval(`document.querySelector('.tab.muted .bell').click()`);
+    await waitFor(() => lines(/^TEST_MUTE Alpha off$/).length === 1, 'unmuted by clicking the bell');
+    mails = [entry('m4', 'Kim', 'After unmute', 'y'), ...mails];
+    await check();
+    await waitFor(() => notes('Alpha').length === 2, 'Alpha announces new mail again');
+    assert(notes('Alpha')[1].includes('After unmute') && !notes('Alpha').some((l) => l.includes('While muted')), 'backlog from the muted period was announced');
+
+    // a burst becomes one summary instead of a pile of notifications
+    mails = ['a', 'b', 'c', 'd'].map((x) => entry('burst-' + x, 'Bot', 'Burst ' + x, 'z')).concat(mails);
+    const before = notes('Beta').length;
+    await check();
+    await waitFor(() => notes('Beta').length === before + 1, 'one summary for the burst');
+    const sum = notes('Beta').pop();
+    assert(/Beta: 4 new messages \| Bot: Burst a \/ Bot: Burst b \/ Bot: Burst c \/ \+1 more$/.test(sum), 'summary text: ' + sum);
+    console.log('ok  mute (tab bell, badge still counts), unmute without backlog, and bursts summarised');
 
     // persistence across restart
     app.child.kill('SIGTERM'); await sleep(1500);
@@ -179,4 +221,8 @@ async function waitFor(fn, what, ms = 15000) {
     fs.rmSync(userData, { recursive: true, force: true });
     setTimeout(() => process.exit(process.exitCode || 0), 500);
   }
-})().catch((e) => { console.error('FAIL', e.message); process.exitCode = 1; });
+})().catch((e) => {
+  console.error('FAIL', e.message);
+  if (process.env.E2E_DEBUG && app) console.error(app.out.filter((l) => /^TEST_(NOTIFY|SEEDED|SUPPR|MUTE)/.test(l)).slice(-14).join('\n'));
+  process.exitCode = 1;
+});
